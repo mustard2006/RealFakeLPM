@@ -47,7 +47,7 @@ func (s *Server) Start() error {
 			s.mu.Unlock()
 
 			// Send initial ACK on connection (Requirement 3)
-			if _, err := conn.Write([]byte{STX, 'A', 'C', 'K', ETX}); err != nil {
+			if _, err := conn.Write(BuildACKResponse()); err != nil {
 				log.Printf("Failed to send initial ACK: %v", err)
 				conn.Close()
 				continue
