@@ -14,39 +14,41 @@ import (
 )
 
 func main() {
-	// Parse command line flags
-	port := flag.Int("port", 5001, "Port to listen on")
+	port := flag.Int("port", 5001, "Server port")
 	flag.Parse()
 
-	// Create and start the server
-	serverAddr := fmt.Sprintf(":%d", *port)
-	server := fakelpm.New(serverAddr)
-
-	// Start the server in a goroutine so it doesn't block
+	// Start server
+	server := fakelpm.New(fmt.Sprintf(":%d", *port))
 	go func() {
-		log.Printf("Starting fake LPM server on port %d", *port)
+		log.Printf("Server starting on port %d", *port)
 		if err := server.Start(); err != nil {
-			log.Fatalf("Server error: %v", err)
+			log.Fatalf("Server failed: %v", err)
 		}
 	}()
 
-	// Give the server a moment to start
-	time.Sleep(100 * time.Millisecond)
+	// Let server start
+	time.Sleep(200 * time.Millisecond)
 
-	// Create and connect client to the same port (not port+2000)
-	cl := client.New(fmt.Sprintf("localhost:%d", *port))
-	err := cl.Connect()
-	if err != nil {
+	// Setup client
+	cl := client.New(fmt.Sprintf("localhost:%d", *port)) // Match server port
+	if err := cl.Connect(); err != nil {
 		log.Fatalf("Client failed: %v", err)
 	}
 	defer cl.Close()
 
-	// Handle graceful shutdown
+	// Send requests
+	if err := cl.SendDownloadRequest(true); err != nil {
+		log.Printf("DT error: %v", err)
+	}
+	time.Sleep(1 * time.Second)
+	if err := cl.SendDownloadRequest(false); err != nil {
+		log.Printf("DP error: %v", err)
+	}
+
+	// Graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
 	<-sigChan
-	log.Println("Shutting down server...")
+	log.Println("Shutting down...")
 	server.Stop()
-	os.Exit(0)
 }

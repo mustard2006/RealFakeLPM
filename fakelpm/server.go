@@ -85,25 +85,43 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		// Try to parse the request
-		_, err = ParseRequest(buf[:n])
+		// Validate and parse the request
+		req, err := ParseRequest(buf[:n])
 		if err != nil {
 			log.Printf("Invalid request: %v", err)
 
-			// Only send RECEIVED if STX and ETX are present (Requirement 1)
+			// Check if basic framing exists
 			if bytes.Contains(buf[:n], []byte{STX}) && bytes.Contains(buf[:n], []byte{ETX}) {
-				if _, err := conn.Write([]byte("RECEIVED")); err != nil {
-					log.Printf("Failed to send response: %v", err)
-					return
+				if _, err := conn.Write(BuildNAKResponse()); err != nil {
+					log.Printf("Failed to send NAK: %v", err)
 				}
 			}
 			continue
 		}
 
-		// If we got here, the request is valid
-		if _, err := conn.Write([]byte("OK")); err != nil {
-			log.Printf("Failed to send response: %v", err)
-			return
+		// Process valid request
+		switch string(req.Command[:]) {
+		case "DT":
+			log.Printf("Received DT request - Measures download")
+			if _, err := conn.Write(BuildACKResponse()); err != nil {
+				log.Printf("Failed to send ACK: %v", err)
+				return
+			}
+			// Add measure download logic here
+
+		case "DP":
+			log.Printf("Received DP request - Partial measures download")
+			if _, err := conn.Write(BuildACKResponse()); err != nil {
+				log.Printf("Failed to send ACK: %v", err)
+				return
+			}
+			// Add partial download logic here
+
+		default:
+			log.Printf("Unknown command: %s", req.Command[:])
+			if _, err := conn.Write(BuildNAKResponse()); err != nil {
+				log.Printf("Failed to send NAK: %v", err)
+			}
 		}
 	}
 }
