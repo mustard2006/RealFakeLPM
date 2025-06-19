@@ -2,41 +2,71 @@ package client
 
 import (
 	"FakeLPM/fakelpm"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
+	"time"
 )
 
 type Client struct {
 	ServerAddr string
 	conn       net.Conn
+	timeout    time.Duration
 }
 
-func (c *Client) SendDownloadRequest(isTotal bool) error {
+func (c *Client) SendDownloadRequest(isTotal bool) (*fakelpm.Header, error) {
 	if c.conn == nil {
-		return fmt.Errorf("not connected to server")
+		return nil, fmt.Errorf("not connected to server")
 	}
 
 	request := fakelpm.NewRequest()
-
-	// 13-th byte to change for T 0x54 or P 0x50
 	if isTotal {
-		request.Command[1] = 0x54 // T
+		request.Command[1] = 0x54 // 'T'
 	} else {
-		request.Command[1] = 0x50 // P
+		request.Command[1] = 0x50 // 'P'
 	}
-
-	// Calculate checksum
-	// Calculate checksum
 	request.CalculateChecksum()
 
-	// Convert to bytes and send
-	if _, err := c.conn.Write(request.Bytes()); err != nil {
-		return fmt.Errorf("failed to send request: %v", err)
+	// Send request
+	c.conn.SetWriteDeadline(time.Now().Add(c.timeout))
+	_, err := c.conn.Write(request.Bytes())
+	c.conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %v", err)
+	}
+	log.Printf("Sent %s request", string(request.Command[:]))
+
+	// Read ACK response (fixed 11 bytes)
+	c.conn.SetReadDeadline(time.Now().Add(c.timeout))
+	ackBuf := make([]byte, 11)
+	_, err = c.conn.Read(ackBuf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read ACK: %v", err)
+	}
+	log.Printf("Received ACK response")
+
+	// Read header block (fixed 35 bytes)
+	headerBuf := make([]byte, 35)
+	_, err = c.conn.Read(headerBuf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read header block: %v", err)
+	}
+	c.conn.SetReadDeadline(time.Time{})
+
+	var calculatedSum uint16
+	for _, b := range headerBuf[1:32] { // Changed from 33 to 32 - checksum covers bytes 1-31
+		calculatedSum += uint16(b)
+		// log.Printf("Byte %d: 0x%02x (%d) - running sum: %d", i+1, b, b, calculatedSum) // for debugging arrived header bytes
+	}
+	receivedChecksum := binary.BigEndian.Uint16(headerBuf[32:34])
+	log.Printf("Final checksum: calculated=%d, received=%d", calculatedSum, receivedChecksum)
+	header, err := fakelpm.ParseHeader(headerBuf)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse header block: %v", err)
 	}
 
-	log.Printf("Sent %s request (measures only)", string(request.Command[:]))
-	return nil
+	return header, nil
 }
 
 func New(serverAddr string) *Client {
@@ -58,6 +88,9 @@ func (c *Client) Connect() error {
 		return fmt.Errorf("failed to read ACK: %v", err)
 	}
 
+	// Reset timeout
+	conn.SetReadDeadline(time.Time{})
+
 	log.Printf("Connected to %s, received ACK: %q", c.ServerAddr, ack[:n])
 	return nil
 }
@@ -67,4 +100,8 @@ func (c *Client) Close() error {
 		return c.conn.Close()
 	}
 	return nil
+}
+
+func (c *Client) SetTimeout(timeout time.Duration) {
+	c.timeout = timeout
 }

@@ -30,20 +30,32 @@ func main() {
 	time.Sleep(200 * time.Millisecond)
 
 	// Setup client
-	cl := client.New(fmt.Sprintf("localhost:%d", *port)) // Match server port
+	cl := client.New(fmt.Sprintf("localhost:%d", *port))
+	cl.SetTimeout(15 * time.Second) // Set reasonable timeout
+
 	if err := cl.Connect(); err != nil {
-		log.Fatalf("Client failed: %v", err)
+		log.Fatalf("Client failed to connect: %v", err)
 	}
 	defer cl.Close()
 
-	// Send requests
-	if err := cl.SendDownloadRequest(true); err != nil {
-		log.Printf("DT error: %v", err)
+	// Send DT request (total download)
+	log.Println("Sending DT request...")
+	header, err := cl.SendDownloadRequest(true)
+	if err != nil {
+		log.Fatalf("DT request failed: %v", err)
 	}
+	log.Printf("Received header block:\n%+v", header)
+
+	// Wait a moment before next request
 	time.Sleep(1 * time.Second)
-	if err := cl.SendDownloadRequest(false); err != nil {
-		log.Printf("DP error: %v", err)
+
+	// Send DP request (partial download)
+	log.Println("Sending DP request...")
+	header, err = cl.SendDownloadRequest(false)
+	if err != nil {
+		log.Fatalf("DP request failed: %v", err)
 	}
+	log.Printf("Received header block:\n%+v", header)
 
 	// Graceful shutdown
 	sigChan := make(chan os.Signal, 1)

@@ -10,9 +10,11 @@ import (
 const (
 	STX      = 0x02
 	ETX      = 0x03
+	ETB      = 0x17
 	Protocol = "C0"
 )
 
+// 22 bytes
 type Request struct {
 	STX       byte    // [0] Start of transmission (0x02)
 	Protocol  [2]byte // [1-2] Protocol "C0"
@@ -55,6 +57,119 @@ func (r *Request) Bytes() []byte {
 	return b
 }
 
+// 35 bytes
+type Header struct {
+	STX              byte    // [0] Start of transmission (0x02)
+	Computer         [2]byte // [1-2] always "PC"
+	IntestationBlock [2]byte // [3-4] always "D0"
+	Model            [2]byte // [5-6] always "L0"
+	UserCode         [4]byte // [7-10] User code
+	PlantCode        [4]byte // [11-14] Plant code
+	Day              [2]byte // [15-16]
+	Month            [2]byte // [17-18]
+	Year             [4]byte // [19-22]
+	Hour             [2]byte // [23-24]
+	Minute           [2]byte // [25-26]
+	RAM              byte    // [27]
+	SWVersion        [4]byte // [28-31] SW Version
+	Checksum         [2]byte // [32-33] Checksum
+	ETB              byte    // [34] End of transmission (0x03)
+}
+
+func NewIntestation() Header {
+	return Header{
+		STX:              STX,                         // [0] Start of transmission (0x02)
+		Computer:         [2]byte{'P', 'C'},           // [1-2] always "PC"
+		IntestationBlock: [2]byte{'D', '0'},           // [3-4] always "D0"
+		Model:            [2]byte{'L', '0'},           // [5-6] always "L0"
+		UserCode:         [4]byte{'0', '0', '0', '0'}, // [7-10] User code
+		PlantCode:        [4]byte{'0', '0', '0', '0'}, // [11-14] Plant code
+		ETB:              ETB,                         // [21] End of transmission (0x03)
+	}
+}
+
+func (header *Header) CalculateHeaderChecksum() {
+	// Create a temporary buffer containing all fields from Computer to SWVersion
+	buf := make([]byte, 31) // Changed from 32 to 31
+	pos := 0
+
+	copy(buf[pos:pos+2], header.Computer[:])
+	pos += 2
+	copy(buf[pos:pos+2], header.IntestationBlock[:])
+	pos += 2
+	copy(buf[pos:pos+2], header.Model[:])
+	pos += 2
+	copy(buf[pos:pos+4], header.UserCode[:])
+	pos += 4
+	copy(buf[pos:pos+4], header.PlantCode[:])
+	pos += 4
+	copy(buf[pos:pos+2], header.Day[:])
+	pos += 2
+	copy(buf[pos:pos+2], header.Month[:])
+	pos += 2
+	copy(buf[pos:pos+4], header.Year[:])
+	pos += 4
+	copy(buf[pos:pos+2], header.Hour[:])
+	pos += 2
+	copy(buf[pos:pos+2], header.Minute[:])
+	pos += 2
+	buf[pos] = header.RAM
+	pos += 1
+	copy(buf[pos:pos+4], header.SWVersion[:])
+
+	// Calculate checksum over all bytes in buffer
+	var sum uint16
+	for _, b := range buf {
+		sum += uint16(b)
+	}
+
+	// Store the checksum
+	binary.BigEndian.PutUint16(header.Checksum[:], sum)
+}
+
+func ParseHeader(data []byte) (*Header, error) {
+	if len(data) != 35 {
+		return nil, fmt.Errorf("header block must be exactly 35 bytes")
+	}
+
+	if data[0] != STX || data[34] != ETB {
+		return nil, fmt.Errorf("invalid frame markers")
+	}
+
+	// Verify checksum - sum bytes 1-31 (Computer to SWVersion)
+	var sum uint16
+	for _, b := range data[1:32] { // Changed from 33 to 32
+		sum += uint16(b)
+	}
+
+	receivedChecksum := binary.BigEndian.Uint16(data[32:34])
+	if sum != receivedChecksum {
+		return nil, fmt.Errorf("invalid checksum (calculated: %d, received: %d)", sum, receivedChecksum)
+	}
+
+	// Parse the header
+	header := &Header{
+		STX: data[0],
+		ETB: data[34],
+	}
+
+	copy(header.Computer[:], data[1:3])
+	copy(header.IntestationBlock[:], data[3:5])
+	copy(header.Model[:], data[5:7])
+	copy(header.UserCode[:], data[7:11])
+	copy(header.PlantCode[:], data[11:15])
+	copy(header.Day[:], data[15:17])
+	copy(header.Month[:], data[17:19])
+	copy(header.Year[:], data[19:23])
+	copy(header.Hour[:], data[23:25])
+	copy(header.Minute[:], data[25:27])
+	header.RAM = data[27]
+	copy(header.SWVersion[:], data[28:32])
+	copy(header.Checksum[:], data[32:34])
+
+	return header, nil
+}
+
 func (r *Request) CalculateChecksum() {
 	var sum uint16
 	data := r.Bytes()
@@ -65,12 +180,13 @@ func (r *Request) CalculateChecksum() {
 }
 
 func ParseRequest(data []byte) (*Request, error) {
-	// Find STX and ETX positions
+	// find STX pos
 	stxPos := bytes.IndexByte(data, STX)
 	if stxPos == -1 {
 		return nil, fmt.Errorf("STX not found")
 	}
 
+	// find ETX pos
 	etxPos := bytes.IndexByte(data, ETX)
 	if etxPos == -1 {
 		return nil, fmt.Errorf("ETX not found")
