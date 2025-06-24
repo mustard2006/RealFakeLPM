@@ -4,33 +4,18 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
-	"FakeLPM/client"
 	"FakeLPM/fakelpm"
 )
 
+// Client
 func main() {
 	port := flag.Int("port", 5001, "Server port")
 	flag.Parse()
 
-	// Start server
-	server := fakelpm.New(fmt.Sprintf(":%d", *port))
-	go func() {
-		log.Printf("Server starting on port %d", *port)
-		if err := server.Start(); err != nil {
-			log.Fatalf("Server failed: %v", err)
-		}
-	}()
-
-	// Let server start
-	time.Sleep(200 * time.Millisecond)
-
 	// Setup client
-	cl := client.New(fmt.Sprintf("localhost:%d", *port))
+	cl := fakelpm.NewClient(fmt.Sprintf("localhost:%d", *port))
 	cl.SetTimeout(15 * time.Second) // Set reasonable timeout
 
 	if err := cl.Connect(); err != nil {
@@ -64,11 +49,4 @@ func main() {
 	for i, m := range measurements {
 		log.Printf("Measurement %d: %+v", i+1, m)
 	}
-
-	// Graceful shutdown
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-	log.Println("Shutting down...")
-	server.Stop()
 }
