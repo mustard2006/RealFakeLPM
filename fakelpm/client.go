@@ -74,6 +74,7 @@ func (c *Client) SendDownloadRequest(isTotal bool) (*Header, []*Measurement, err
 
 	var measurements []*Measurement
 	buf := make([]byte, 1) // For reading first byte
+	pkgCounter := 0
 
 	for {
 		// Read first byte to identify message type
@@ -100,11 +101,13 @@ func (c *Client) SendDownloadRequest(isTotal bool) (*Header, []*Measurement, err
 			totalLength int
 		)
 
-		// Check for measurement (STX + 'PC' + 'D4')
-		if bytes.Equal(typeBuf[:3], []byte{'P', 'C', 'D'}) && typeBuf[3] == '4' {
-			messageType = "measurement"
-			totalLength = 56
-		} else if bytes.Equal(typeBuf, []byte{'P', 'C', 'D', '4'}) { // Check for final (STX + 'PC' + 'D4' + 'E')
+		// First, check if we have at least 4 bytes
+		if len(typeBuf) < 4 {
+			return header, measurements, fmt.Errorf("invalid message header length")
+		}
+
+		// Check for final package first (most specific case)
+		if bytes.Equal(typeBuf, []byte{'P', 'C', 'D', '4'}) {
 			// Need to check next 3 bytes for 'EOD'
 			eodBuf := make([]byte, 3)
 			_, err = io.ReadFull(c.conn, eodBuf)
@@ -114,11 +117,51 @@ func (c *Client) SendDownloadRequest(isTotal bool) (*Header, []*Measurement, err
 
 			if bytes.Equal(eodBuf, []byte{'E', 'O', 'D'}) {
 				messageType = "final"
-				totalLength = 10 // STX + PC + D4 + EOD + checksum + ETX
+				totalLength = 11 // STX + PC + D4 + EOD + checksum + ETX
 				typeBuf = append(typeBuf, eodBuf...)
 			} else {
-				return header, measurements, fmt.Errorf("unexpected message format")
+				// Not a final package, so it must be a measurement
+				// We've already read 4 bytes (PC D4) and 3 more (non-EOD)
+				// For measurement, we need to read the remaining 49 bytes (56 total - 7 already read)
+				messageType = "measurement"
+				totalLength = 56
+				pkgCounter++
+				log.Printf("Received measure package %d", pkgCounter)
+
+				// We have 3 bytes in eodBuf that are part of the measurement
+				remaining := totalLength - 1 - 4 - 3 // STX(1) + typeBuf(4) + eodBuf(3)
+				remainingBuf := make([]byte, remaining)
+				_, err = io.ReadFull(c.conn, remainingBuf)
+				if err != nil {
+					return header, measurements, fmt.Errorf("failed to read measurement body: %v", err)
+				}
+
+				// Combine all parts
+				fullMessage := append([]byte{STX}, typeBuf...)
+				fullMessage = append(fullMessage, eodBuf...)
+				fullMessage = append(fullMessage, remainingBuf...)
+
+				// Parse the measurement
+				measurement, err := ParseMeasurement(fullMessage)
+				if err != nil {
+					return header, measurements, fmt.Errorf("failed to parse measurement: %v", err)
+				}
+				measurements = append(measurements, measurement)
+
+				// Send ACK for measurement
+				if _, err := c.conn.Write(BuildACKMeasureResponse()); err != nil {
+					return header, measurements, fmt.Errorf("failed to send ACK measure: %v", err)
+				}
+
+				// Skip the rest of the loop since we already processed this as a measurement
+				continue
 			}
+		} else if bytes.Equal(typeBuf[:3], []byte{'P', 'C', 'D'}) && typeBuf[3] == '4' {
+			// Regular measurement package
+			messageType = "measurement"
+			totalLength = 56
+			pkgCounter++
+			log.Printf("Received measure package %d", pkgCounter)
 		} else {
 			return header, measurements, fmt.Errorf("unknown message type: %x", typeBuf)
 		}

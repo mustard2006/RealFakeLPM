@@ -101,12 +101,12 @@ type Measurement struct {
 
 // 1 + 2 + 2 + 3 + 2 + 1 = 11 byte
 type Final struct {
-	STX         byte
-	Computer    [2]byte // always 'P' 'C'
-	EndBlock    [2]byte // Always 'D' '4'
-	EndDownload [3]byte // always 'E' 'O' 'D'
-	Checksum    [2]byte
-	ETX         byte
+	STX         byte // [0]
+	Computer    [2]byte // [1-2] always 'P' 'C'
+	EndBlock    [2]byte // [3-4] Always 'D' '4'
+	EndDownload [3]byte // [5-7] always 'E' 'O' 'D'
+	Checksum    [2]byte // [8-9]
+	ETX         byte // [11]
 }
 
 // <---FINAL PACKAGE--->
@@ -117,19 +117,20 @@ func NewFinal() *Final {
 		Computer:    [2]byte{'P', 'C'},
 		EndBlock:    [2]byte{'D', '4'},
 		EndDownload: [3]byte{'E', 'O', 'D'},
+		Checksum:    [2]byte{0, 0}, // Will be calculated
 		ETX:         ETX,
 	}
 }
 
 // Bytes converts the Final package to a byte slice
 func (f *Final) Bytes() []byte {
-	b := make([]byte, 10) // STX(1) + Computer(2) + EndBlock(2) + EndDownload(3) + Checksum(2) + ETX(1)
+	b := make([]byte, 11) // STX(1) + Computer(2) + EndBlock(2) + EndDownload(3) + Checksum(2) + ETX(1)
 	b[0] = f.STX
 	copy(b[1:3], f.Computer[:])
 	copy(b[3:5], f.EndBlock[:])
 	copy(b[5:8], f.EndDownload[:])
 	copy(b[8:10], f.Checksum[:])
-	b[9] = f.ETX
+	b[10] = f.ETX
 	return b
 }
 
@@ -168,27 +169,30 @@ func ParseFinal(data []byte) (*Final, error) {
 	// Extract the framed message
 	framedData := data[stxPos : etxPos+1]
 
-	if len(framedData) != 10 {
-		return nil, fmt.Errorf("invalid final message length (%d bytes)", len(framedData))
+	if len(framedData) != 11 { // Changed from 10 to 11 (STX + PC + D4 + EOD + checksum(2) + ETX)
+		return nil, fmt.Errorf("invalid final message length (%d bytes), expected 11", len(framedData))
 	}
 
 	f := &Final{
 		STX: framedData[0],
-		ETX: framedData[9],
+		ETX: framedData[10], // Changed from 9 to 10
 	}
 
 	copy(f.Computer[:], framedData[1:3])
 	copy(f.EndBlock[:], framedData[3:5])
 	copy(f.EndDownload[:], framedData[5:8])
-	copy(f.Checksum[:], framedData[8:10])
+	copy(f.Checksum[:], framedData[8:10]) // Checksum is 2 bytes at positions 8-9
 
 	// Verify checksum
 	var sum uint16
-	for _, b := range framedData[1:8] { // Sum bytes from Computer to EndDownload
+	// Sum bytes from Computer (1) to EndDownload (7)
+	for _, b := range framedData[1:8] {
 		sum += uint16(b)
 	}
-	if binary.BigEndian.Uint16(f.Checksum[:]) != sum {
-		return nil, errors.New("invalid checksum")
+
+	receivedChecksum := binary.BigEndian.Uint16(f.Checksum[:])
+	if sum != receivedChecksum {
+		return nil, fmt.Errorf("invalid checksum (calculated: %d, received: %d)", sum, receivedChecksum)
 	}
 
 	return f, nil

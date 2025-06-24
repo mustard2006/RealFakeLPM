@@ -35,6 +35,10 @@ func BuildNAKResponse() []byte {
 	return []byte{STX, 'P', 'C', 'R', '0', 'N', 'A', 'K', '0', 'F', ETX}
 }
 
+func BuildACKMeasureResponse() []byte {
+	return []byte{STX, 'P', 'C', 'R', '0', 'M', 'S', 'R', '0', 'F', ETX}
+}
+
 func BuildEndFrameResponse() []byte {
 	// Example end frame from documentation
 	endFrame := "02 50 43 52 31 45 33 38 37 31 30 30 37 32 33 33 31 37 31 03"
