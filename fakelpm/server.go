@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"log"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -87,12 +88,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		// Validate and parse the request
 		req, err := ParseRequest(buf[:n])
 		if err != nil {
 			log.Printf("Invalid request: %v", err)
-
-			// Check if basic framing exists
 			if bytes.Contains(buf[:n], []byte{STX}) && bytes.Contains(buf[:n], []byte{ETX}) {
 				if _, err := conn.Write(BuildNAKResponse()); err != nil {
 					log.Printf("Failed to send NAK: %v", err)
@@ -101,37 +99,59 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		// Process valid request
 		switch string(req.Command[:]) {
-		case "DT":
-			log.Printf("Received DT request - Measures download")
-			// Send ACK first
+		case "DT", "DP":
+			log.Printf("Received %s request - Measures download", string(req.Command[:]))
 			if _, err := conn.Write(BuildACKResponse()); err != nil {
 				log.Printf("Failed to send ACK: %v", err)
 				return
 			}
-			// Then send intestation block
-			intestation := BuildIntestationResponse(req)
-			if _, err := conn.Write(intestation); err != nil {
-				log.Printf("Failed to send intestation block: %v", err)
-				return
-			}
-			log.Printf("Sent Header block for DT request")
 
-		case "DP":
-			log.Printf("Received DP request - Partial measures download")
-			// Send ACK first
-			if _, err := conn.Write(BuildACKResponse()); err != nil {
-				log.Printf("Failed to send ACK: %v", err)
+			headerBytes := BuildHeaderResponse(req)
+			if _, err := conn.Write(headerBytes); err != nil {
+				log.Printf("Failed to send header: %v", err)
 				return
 			}
-			// Then send intestation block
-			intestation := BuildIntestationResponse(req)
-			if _, err := conn.Write(intestation); err != nil {
-				log.Printf("Failed to send intestation block: %v", err)
+			log.Printf("Sent Header block for %s request", string(req.Command[:]))
+
+			// Wait for client to acknowledge header
+			ackBuf := make([]byte, 11)
+			if _, err := conn.Read(ackBuf); err != nil {
+				log.Printf("Failed to read header ACK: %v", err)
 				return
 			}
-			log.Printf("Sent Header block for DP request")
+
+			// Send measurements
+			numMeasurements := 3 + rand.Intn(8)
+			for i := 0; i < numMeasurements; i++ {
+				measurement := NewRandomMeasurement()
+				measurementBytes := measurementToBytes(measurement)
+				if _, err := conn.Write(measurementBytes); err != nil {
+					log.Printf("Failed to send measurement: %v", err)
+					return
+				}
+				log.Printf("Sent measurement %d/%d", i+1, numMeasurements)
+
+				// Wait for ACK with timeout
+				ackBuf := make([]byte, 11)
+				conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				_, err := conn.Read(ackBuf)
+				conn.SetReadDeadline(time.Time{})
+				if err != nil {
+					log.Printf("Failed to read measurement ACK: %v", err)
+					return
+				}
+			}
+
+			// Send final package
+			final := NewFinal()
+			final.CalculateFinalChecksum()
+			finalBytes := final.Bytes()
+			if _, err := conn.Write(finalBytes); err != nil {
+				log.Printf("Failed to send final package: %v", err)
+				return
+			}
+			log.Printf("Sent final package")
 
 		default:
 			log.Printf("Unknown command: %s", req.Command[:])
@@ -142,8 +162,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func BuildIntestationResponse(req *Request) []byte {
-	header := NewIntestation()
+func BuildHeaderResponse(req *Request) []byte {
+	header := NewHeader()
 
 	// Copy relevant fields from request
 	copy(header.UserCode[:], req.UserCode[:])
