@@ -31,6 +31,7 @@ func main() {
 	}
 	log.Printf("Received header block:\n%+v", header)
 	log.Printf("Received %d measurements:", len(measurements))
+	// Print measurements
 	for i, m := range measurements {
 		log.Printf("Measurement %d: %+v", i+1, m)
 	}
@@ -46,7 +47,8 @@ func main() {
 	}
 	log.Printf("Received header block:\n%+v", header)
 	log.Printf("Received %d measurements:", len(measurements))
-	for i, m := range measurements {
-		log.Printf("Measurement %d: %+v", i+1, m)
-	}
+	// Print measurements
+	// for i, m := range measurements {
+	// 	log.Printf("Measurement %d: %+v", i+1, m)
+	// }
 }
