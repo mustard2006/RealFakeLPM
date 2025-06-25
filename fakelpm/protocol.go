@@ -3,6 +3,7 @@ package fakelpm
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -402,6 +403,9 @@ func generateRandomData(t time.Time) [48]byte {
 
 	// Reserved (47)
 	d[47] = 0
+
+	payloadString := hex.EncodeToString(d[:])
+	Payload = append(Payload, payloadString)
 
 	return d
 }

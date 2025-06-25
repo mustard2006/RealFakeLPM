@@ -78,6 +78,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 		delete(s.Connections, conn)
 		s.mu.Unlock()
 		conn.Close()
+
+		// Print payload after connection closes
+		fmt.Println("\nServer Payload:")
+		for i, payload := range Payload {
+			fmt.Printf("[%d] %s\n", i, payload)
+		}
+		fmt.Println("End of Server Payload\n")
 	}()
 
 	log.Printf("New connection from %s", conn.RemoteAddr())

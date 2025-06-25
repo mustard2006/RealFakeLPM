@@ -17,6 +17,10 @@ var (
 	currentSampleIndex = 0
 )
 
+// Storage for generated payload in period of time that server is running
+var Payload []string
+
+
 func GetNextMeasurement() ([]byte, error) {
 	if len(SampleMeasurements) == 0 {
 		return nil, nil
