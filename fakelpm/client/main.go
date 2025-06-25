@@ -25,29 +25,29 @@ func main() {
 
 	// Send DT request (total download)
 	log.Println("Sending DT request...")
-	header, measurements, err := cl.SendDownloadRequest(true)
+	_, _, err := cl.SendDownloadRequest(true)
 	if err != nil {
 		log.Fatalf("DT request failed: %v", err)
 	}
-	log.Printf("Received header block:\n%+v", header)
-	log.Printf("Received %d measurements:", len(measurements))
-	// Print measurements
-	for i, m := range measurements {
-		log.Printf("Measurement %d: %+v", i+1, m)
-	}
+	// Print received packages
+	// log.Printf("Received header block:\n%+v", header)
+	// log.Printf("Received %d measurements:", len(measurements))
+	// for i, m := range measurements {
+	// 	log.Printf("Measurement %d: %+v", i+1, m)
+	// }
 
 	// Wait a moment before next request
 	time.Sleep(1 * time.Second)
 
 	// Send DP request (partial download)
 	log.Println("Sending DP request...")
-	header, measurements, err = cl.SendDownloadRequest(false)
+	_, _, err = cl.SendDownloadRequest(false)
 	if err != nil {
 		log.Fatalf("DP request failed: %v", err)
 	}
-	log.Printf("Received header block:\n%+v", header)
-	log.Printf("Received %d measurements:", len(measurements))
-	// Print measurements
+	// Print received packages
+	// log.Printf("Received header block:\n%+v", header)
+	// log.Printf("Received %d measurements:", len(measurements))
 	// for i, m := range measurements {
 	// 	log.Printf("Measurement %d: %+v", i+1, m)
 	// }

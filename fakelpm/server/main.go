@@ -17,7 +17,7 @@ func main() {
 	flag.Parse()
 
 	// Start server
-	server := fakelpm.New(fmt.Sprintf(":%d", *port))
+	server, _ := fakelpm.New(fmt.Sprintf(":%d", *port))
 	log.Printf("Server starting on port %d", *port)
 
 	// Graceful shutdown

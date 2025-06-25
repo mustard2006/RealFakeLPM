@@ -3,6 +3,7 @@ package fakelpm
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"log"
 	"math/rand"
 	"net"
@@ -15,14 +16,23 @@ type Server struct {
 	Connections map[net.Conn]bool
 	mu          sync.Mutex
 	stopChan    chan struct{}
+	StartTime   time.Time
+	Location    *time.Location
 }
 
-func New(addr string) *Server {
+func New(addr string) (*Server, error) {
+	loc, err := detectTimezone()
+	if err != nil {
+		return nil, fmt.Errorf("timezone detection failed: %v", err)
+	}
+
 	return &Server{
 		Addr:        addr,
 		Connections: make(map[net.Conn]bool),
 		stopChan:    make(chan struct{}),
-	}
+		StartTime:   time.Now().In(loc),
+		Location:    loc,
+	}, nil
 }
 
 func (s *Server) Start() error {
@@ -32,6 +42,7 @@ func (s *Server) Start() error {
 	}
 	defer ln.Close()
 
+	log.Printf("Server started at %s", s.StartTime.Format(time.RFC3339))
 	log.Printf("Server listening on %s", s.Addr)
 
 	for {
@@ -58,15 +69,6 @@ func (s *Server) Start() error {
 
 			go s.handleConnection(conn)
 		}
-	}
-}
-
-func (s *Server) Stop() {
-	close(s.stopChan)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for conn := range s.Connections {
-		conn.Close()
 	}
 }
 
@@ -102,12 +104,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		switch string(req.Command[:]) {
 		case "DT", "DP":
 			log.Printf("Received %s request - Measures download", string(req.Command[:]))
-			if _, err := conn.Write(BuildACKResponse()); err != nil {
-				log.Printf("Failed to send ACK: %v", err)
-				return
-			}
-
-			headerBytes := BuildHeaderResponse(req)
+			headerBytes := BuildHeaderResponse(s, req)
 			if _, err := conn.Write(headerBytes); err != nil {
 				log.Printf("Failed to send header: %v", err)
 				return
@@ -162,7 +159,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
-func BuildHeaderResponse(req *Request) []byte {
+func BuildHeaderResponse(s *Server, req *Request) []byte {
 	header := NewHeader()
 
 	// Copy relevant fields from request
@@ -170,7 +167,7 @@ func BuildHeaderResponse(req *Request) []byte {
 	copy(header.PlantCode[:], req.PlantCode[:])
 
 	// Set current date and time
-	now := time.Now()
+	now := time.Now().In(s.Location)
 	copy(header.Day[:], intToBCD(now.Day()))
 	copy(header.Month[:], intToBCD(int(now.Month())))
 	copy(header.Year[:], intToBCD(now.Year()%100))
@@ -217,4 +214,13 @@ func BuildHeaderResponse(req *Request) []byte {
 func intToBCD(n int) []byte {
 	// For numbers 0-99
 	return []byte{byte((n/10)<<4 | (n % 10))}
+}
+
+func (s *Server) Stop() {
+	close(s.stopChan)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for conn := range s.Connections {
+		conn.Close()
+	}
 }

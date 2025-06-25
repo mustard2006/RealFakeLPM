@@ -17,6 +17,44 @@ type Client struct {
 	timeout    time.Duration
 }
 
+func NewClient(serverAddr string) *Client {
+	return &Client{ServerAddr: serverAddr}
+}
+
+func (c *Client) Connect() error {
+	conn, err := net.Dial("tcp", c.ServerAddr)
+	if err != nil {
+		return fmt.Errorf("connection failed: %v", err)
+	}
+	c.conn = conn
+
+	// Read ACK
+	ack := make([]byte, 2048)
+	n, err := conn.Read(ack)
+	if err != nil {
+		conn.Close()
+		return fmt.Errorf("failed to read ACK: %v", err)
+	}
+
+	// Reset timeout
+	conn.SetReadDeadline(time.Time{})
+
+	log.Printf("Connected to %s", c.ServerAddr)
+	log.Printf("received Welcome ACK: %q", ack[:n])
+	return nil
+}
+
+func (c *Client) Close() error {
+	if c.conn != nil {
+		return c.conn.Close()
+	}
+	return nil
+}
+
+func (c *Client) SetTimeout(timeout time.Duration) {
+	c.timeout = timeout
+}
+
 func (c *Client) SendDownloadRequest(isTotal bool) (*Header, []*Measurement, error) {
 	if c.conn == nil {
 		return nil, nil, fmt.Errorf("not connected to server")
@@ -40,13 +78,15 @@ func (c *Client) SendDownloadRequest(isTotal bool) (*Header, []*Measurement, err
 	log.Printf("Sent %s request", string(request.Command[:]))
 
 	// Read ACK response
-	c.conn.SetReadDeadline(time.Now().Add(c.timeout))
-	ackBuf := make([]byte, 11)
-	_, err = c.conn.Read(ackBuf)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read ACK: %v", err)
-	}
-	log.Printf("Received ACK response")
+	/*
+		c.conn.SetReadDeadline(time.Now().Add(c.timeout))
+		ackBuf := make([]byte, 11)
+		_, err = c.conn.Read(ackBuf)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read ACK: %v", err)
+		}
+		log.Printf("Received ACK response")
+	*/
 
 	// Read header block
 	headerBuf := make([]byte, 35)
@@ -149,9 +189,11 @@ func (c *Client) SendDownloadRequest(isTotal bool) (*Header, []*Measurement, err
 				measurements = append(measurements, measurement)
 
 				// Send ACK for measurement
-				if _, err := c.conn.Write(BuildACKMeasureResponse()); err != nil {
+				ack := BuildACKMeasureResponse()
+				if _, err := c.conn.Write(ack); err != nil {
 					return header, measurements, fmt.Errorf("failed to send ACK measure: %v", err)
 				}
+				log.Printf("Sent session ACK: %q", ack)
 
 				// Skip the rest of the loop since we already processed this as a measurement
 				continue
@@ -244,41 +286,4 @@ func parseMeasurement(data []byte) (*Measurement, error) {
 	}
 
 	return m, nil
-}
-
-func NewClient(serverAddr string) *Client {
-	return &Client{ServerAddr: serverAddr}
-}
-
-func (c *Client) Connect() error {
-	conn, err := net.Dial("tcp", c.ServerAddr)
-	if err != nil {
-		return fmt.Errorf("connection failed: %v", err)
-	}
-	c.conn = conn
-
-	// Read ACK
-	ack := make([]byte, 2048)
-	n, err := conn.Read(ack)
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("failed to read ACK: %v", err)
-	}
-
-	// Reset timeout
-	conn.SetReadDeadline(time.Time{})
-
-	log.Printf("Connected to %s, received ACK: %q", c.ServerAddr, ack[:n])
-	return nil
-}
-
-func (c *Client) Close() error {
-	if c.conn != nil {
-		return c.conn.Close()
-	}
-	return nil
-}
-
-func (c *Client) SetTimeout(timeout time.Duration) {
-	c.timeout = timeout
 }
