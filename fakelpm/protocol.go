@@ -2,6 +2,7 @@ package fakelpm
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -62,7 +63,8 @@ type Data struct {
 	Year              byte    // [1]
 	Month             byte    // [2]
 	Day               byte    // [3]
-	Palo              [2]byte // [4-5]
+	PoleLow           byte    // [4]
+	PoleHigh          byte    // [5]
 	MeasureType       byte    // [6] 00 or 07
 	AELampStatus      byte    // [7]
 	AETension         [2]byte // [8-9]
@@ -124,6 +126,107 @@ func detectTimezone() (*time.Location, error) {
 	// Final fallback to UTC
 	return time.UTC, nil
 }
+
+// <---DECODE BASE64--->
+
+func (s *Server) DecodeMeasures() ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	for _, sample := range SampleMeasurements {
+		// Decode from base64
+		data, err := base64.StdEncoding.DecodeString(sample)
+		if err != nil {
+			return nil, fmt.Errorf("base64 decode failed: %v", err)
+		}
+
+		// Verify and remove D4 header
+		if len(data) < 2 || string(data[:2]) != "D4" {
+			continue
+		}
+		measurementData := data[2:] // Remove D4 header
+
+		// Verify length is multiple of 48
+		if len(measurementData)%48 != 0 {
+			return nil, fmt.Errorf("invalid data length: %d bytes (not divisible by 48)", len(measurementData))
+		}
+
+		// Process each 48-byte block
+		for i := 0; i < len(measurementData)/48; i++ {
+			block := measurementData[i*48 : (i*48)+48]
+
+			// Parse the 48-byte block into measurements
+			blockResults, err := parseMeasurementBlock(block, s.Location)
+			if err != nil {
+				return nil, err
+			}
+			results = append(results, blockResults...)
+		}
+	}
+
+	return results, nil
+}
+
+func parseMeasurementBlock(block []byte, loc *time.Location) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	// Extract basic information
+	status := block[0]
+	year := int(block[1])
+	month := int(block[2])
+	day := int(block[3])
+	pole := binary.LittleEndian.Uint16(block[4:6])
+	measureType := block[6]
+
+	// Process the 3 measurements in each block
+	for idx := 0; idx < 3; idx++ {
+		result := make(map[string]interface{})
+		offset := idx * 11
+		timeOffset := idx * 2
+
+		// Create timestamp (using server's location)
+		measureTime := time.Date(
+			2000+year,
+			time.Month(month),
+			day,
+			12, 0, 0, 0, // Noon as base time
+			loc,
+		)
+
+		if hrs := int(binary.LittleEndian.Uint16(block[40+timeOffset : 42+timeOffset])); hrs != 0xFFFF {
+			measureTime = measureTime.Add(time.Minute * time.Duration(hrs))
+		}
+
+		// Electrical measurements
+		voltage := binary.LittleEndian.Uint16(block[8+offset : 10+offset])
+		current := float64(binary.LittleEndian.Uint16(block[10+offset:12+offset])) * 3.57 / 1000
+		cosfi := float64(block[16+offset]) / 100
+		if block[17+offset]&1 == 1 {
+			cosfi *= -1
+		}
+		power := float64(voltage) * current * cosfi
+
+		// Lamp state
+		state := block[7+offset]
+		lampOn := state&1 == 1
+
+		// Build result map
+		result["timestamp"] = measureTime
+		result["pole"] = pole
+		result["voltage"] = float64(voltage)
+		result["current"] = current
+		result["power"] = power
+		result["cosfi"] = cosfi
+		result["lamp_on"] = lampOn
+		result["measure_type"] = measureType
+		result["status"] = status
+
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+// <---DECODE BASE64--->
 
 // <---REQUEST PACKAGE--->
 
@@ -331,6 +434,17 @@ func NewRandomMeasurement() *Measurement {
 	return m
 }
 
+func (m *Measurement) Bytes() []byte {
+	b := make([]byte, 56)
+	b[0] = m.STX
+	copy(b[1:3], m.Computer[:])
+	copy(b[3:5], m.BlockType[:])
+	copy(b[5:53], m.Data[:])
+	copy(b[53:55], m.Checksum[:])
+	b[55] = m.ETB
+	return b
+}
+
 // Add this function to protocol.go, with the other parsing functions
 func ParseMeasurement(data []byte) (*Measurement, error) {
 	if len(data) != 56 {
@@ -404,8 +518,9 @@ func generateRandomData(t time.Time) [48]byte {
 	// Reserved (47)
 	d[47] = 0
 
+	// Save hex encoded payload
 	payloadString := hex.EncodeToString(d[:])
-	Payload = append(Payload, payloadString)
+	PayloadHex = append(PayloadHex, payloadString)
 
 	return d
 }

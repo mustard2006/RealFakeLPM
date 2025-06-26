@@ -29,7 +29,7 @@ func (c *Client) Connect() error {
 	c.conn = conn
 
 	// Read ACK
-	ack := make([]byte, 2048)
+	ack := make([]byte, 11)
 	n, err := conn.Read(ack)
 	if err != nil {
 		conn.Close()

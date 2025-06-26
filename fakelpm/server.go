@@ -3,6 +3,7 @@ package fakelpm
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -79,12 +80,47 @@ func (s *Server) handleConnection(conn net.Conn) {
 		s.mu.Unlock()
 		conn.Close()
 
-		// Print payload after connection closes
-		fmt.Println("\nServer Payload:")
-		for i, payload := range Payload {
-			fmt.Printf("[%d] %s\n", i, payload)
+		// Decode and print payload as JSON
+		payload, err := s.DecodeMeasures()
+		if err != nil {
+			log.Printf("Error decoding measures: %v", err)
+			return
 		}
-		fmt.Println("End of Server Payload\n")
+
+		log.Printf("\n<--- PAYLOAD DUMP START --->")
+		log.Printf("Total measurements decoded: %d", len(payload))
+
+		// Group measurements by sample index and pole
+		measurementsBySample := make(map[int]map[uint16][]map[string]interface{})
+		for i, measurement := range payload {
+			sampleIndex := i / 3 // Assuming 3 measurements per sample
+			pole := measurement["pole"].(uint16)
+
+			if measurementsBySample[sampleIndex] == nil {
+				measurementsBySample[sampleIndex] = make(map[uint16][]map[string]interface{})
+			}
+			measurementsBySample[sampleIndex][pole] = append(measurementsBySample[sampleIndex][pole], measurement)
+		}
+
+		// Print each sample separately
+		for sampleIndex, poles := range measurementsBySample {
+			log.Printf("\n=== Sample %d ===", sampleIndex+1)
+
+			for pole, measurements := range poles {
+				log.Printf("--- Pole %d ---", pole)
+
+				for _, m := range measurements {
+					jsonData, err := json.MarshalIndent(m, "", "  ")
+					if err != nil {
+						log.Printf("Error marshaling measurement: %v", err)
+						continue
+					}
+					log.Printf("%s", string(jsonData))
+				}
+			}
+		}
+
+		log.Printf("<--- PAYLOAD DUMP END --->\n")
 	}()
 
 	log.Printf("New connection from %s", conn.RemoteAddr())
@@ -139,12 +175,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 				// Wait for ACK with timeout
 				ackBuf := make([]byte, 11)
 				conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-				_, err := conn.Read(ackBuf)
+				n, err := conn.Read(ackBuf)
 				conn.SetReadDeadline(time.Time{})
 				if err != nil {
 					log.Printf("Failed to read measurement ACK: %v", err)
 					return
 				}
+				log.Printf("received session ACK: %q", ackBuf[:n])
 			}
 
 			// Send final package

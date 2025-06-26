@@ -18,8 +18,8 @@ var (
 )
 
 // Storage for generated payload in period of time that server is running
-var Payload []string
-
+var PayloadHex []string
+var Payload []map[string]interface{}
 
 func GetNextMeasurement() ([]byte, error) {
 	if len(SampleMeasurements) == 0 {
