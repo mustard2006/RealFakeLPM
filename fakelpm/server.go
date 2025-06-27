@@ -3,7 +3,6 @@ package fakelpm
 import (
 	"bytes"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -80,65 +79,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 		s.mu.Unlock()
 		conn.Close()
 
-		payload, err := s.DecodeMeasures()
+		loc, _ := time.LoadLocation("Europe/Rome")
+		results, err := DecodeHistoricalMeasures(SampleMeasurements[0], loc)
 		if err != nil {
-			log.Printf("Error decoding measures: %v", err)
-			return
+			log.Fatal(err)
 		}
 
-		log.Printf("\n<--- PAYLOAD DUMP START --->")
-		log.Printf("Total measurements decoded: %d", len(payload))
-
-		// New organization - 3 levels:
-		// 1. Original SampleMeasurements index
-		// 2. Payload index within sample (0 or 1)
-		// 3. Measurement index within payload (0-2)
-
-		measurementsBySample := make(map[int]map[int][]map[string]interface{})
-
-		for i, measurement := range payload {
-			sampleIndex := i / 6        // 6 measurements per original sample (2 payloads × 3)
-			payloadIndex := (i / 3) % 2 // 0 or 1
-			measurementIndex := i % 3   // 0, 1, or 2
-
-			if measurementsBySample[sampleIndex] == nil {
-				measurementsBySample[sampleIndex] = make(map[int][]map[string]interface{})
-			}
-
-			// Add measurement metadata
-			measurement["sample"] = sampleIndex + 1
-			measurement["payload"] = payloadIndex + 1
-			measurement["measurement"] = measurementIndex + 1
-
-			measurementsBySample[sampleIndex][payloadIndex] = append(
-				measurementsBySample[sampleIndex][payloadIndex],
-				measurement,
-			)
+		for _, result := range results {
+			fmt.Printf("Measurement: %+v\n", result)
 		}
-
-		// Print organized output
-		for sampleIdx := 0; sampleIdx < len(SampleMeasurements); sampleIdx++ {
-			if payloads, exists := measurementsBySample[sampleIdx]; exists {
-				log.Printf("\n=== ORIGINAL SAMPLE %d ===", sampleIdx+1)
-
-				for payloadIdx := 0; payloadIdx < 2; payloadIdx++ {
-					if measurements, exists := payloads[payloadIdx]; exists {
-						log.Printf("--- Payload %d ---", payloadIdx+1)
-
-						for _, m := range measurements {
-							jsonData, err := json.MarshalIndent(m, "", "  ")
-							if err != nil {
-								log.Printf("Error marshaling: %v", err)
-								continue
-							}
-							log.Printf("%s", string(jsonData))
-						}
-					}
-				}
-			}
-		}
-
-		log.Printf("<--- PAYLOAD DUMP END --->\n")
 	}()
 
 	log.Printf("New connection from %s", conn.RemoteAddr())

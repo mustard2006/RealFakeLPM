@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"time"
 )
 
@@ -58,58 +60,41 @@ type Header struct {
 
 // 48 byte
 type Data struct {
-	Status      byte // [0] - Contains year high bits (5 bits) and status flags
-	YearLow     byte // [1] - Year low bits
-	Month       byte // [2] - Month in BCD format
-	Day         byte // [3] - Day in BCD format
-	PoleLow     byte // [4] - Pole address low byte
-	PoleHigh    byte // [5] - Pole address high byte
-	MeasureType byte // [6] - 0x00 or 0x07
-	// Measurement 1 (AE - first measurement)
-	AELampStatus  byte // [7]
-	AETensionLow  byte // [8] - Voltage low byte
-	AETensionHigh byte // [9] - Voltage high byte
-	AECurrentLow  byte // [10] - Current low byte
-	AECurrentHigh byte // [11] - Current high byte
-	AEPoweredLow  byte // [12] - Powered duration low byte
-	AEPoweredHigh byte // [13] - Powered duration high byte
-	AELitLow      byte // [14] - Lit duration low byte
-	AELitHigh     byte // [15] - Lit duration high byte
-	AECosfiValue  byte // [16] - Power factor value
-	AECosfiSign   byte // [17] - Power factor sign
-	// Measurement 2 (M1 - second measurement)
-	M1LampStatus  byte // [18]
-	M1TensionLow  byte // [19]
-	M1TensionHigh byte // [20]
-	M1CurrentLow  byte // [21]
-	M1CurrentHigh byte // [22]
-	M1PoweredLow  byte // [23]
-	M1PoweredHigh byte // [24]
-	M1LitLow      byte // [25]
-	M1LitHigh     byte // [26]
-	M1CosfiValue  byte // [27]
-	M1CosfiSign   byte // [28]
-	// Measurement 3 (M2 - third measurement)
-	M2LampStatus  byte // [29]
-	M2TensionLow  byte // [30]
-	M2TensionHigh byte // [31]
-	M2CurrentLow  byte // [32]
-	M2CurrentHigh byte // [33]
-	M2PoweredLow  byte // [34]
-	M2PoweredHigh byte // [35]
-	M2LitLow      byte // [36]
-	M2LitHigh     byte // [37]
-	M2CosfiValue  byte // [38]
-	M2CosfiSign   byte // [39]
-	// Harvest times (for each measurement)
-	AEHarvestTimeLow  byte // [40]
-	AEHarvestTimeHigh byte // [41]
-	M1HarvestTimeLow  byte // [42]
-	M1HarvestTimeHigh byte // [43]
-	M2HarvestTimeLow  byte // [44]
-	M2HarvestTimeHigh byte // [45]
-	ConversionType    byte // [46] - Time scale factor (0-3)
-	Reserved          byte // [47]
+	Status      byte // [0]
+	Year        byte // [1]
+	Month       byte // [2]
+	Day         byte // [3]
+	PoleLow     byte // [4]
+	PoleHigh    byte // [5]
+	MeasureType byte // [6]
+
+	// Measurement 1 (equivalent to AE in your output)
+	M1LampState       byte    // [7]
+	M1Tension         [2]byte // [8-9]
+	M1Current         [2]byte // [10-11]
+	M1PoweredDuration [2]byte // [12-13]
+	M1LitDuration     [2]byte // [14-15]
+	M1Cosfi           [2]byte // [16-17]
+
+	// Measurement 2
+	M2LampState       byte    // [18]
+	M2Tension         [2]byte // [19-20]
+	M2Current         [2]byte // [21-22]
+	M2PoweredDuration [2]byte // [23-24]
+	M2LitDuration     [2]byte // [25-26]
+	M2Cosfi           [2]byte // [27-28]
+
+	// Measurement 3
+	M3LampState       byte    // [29]
+	M3Tension         [2]byte // [30-31]
+	M3Current         [2]byte // [32-33]
+	M3PoweredDuration [2]byte // [34-35]
+	M3LitDuration     [2]byte // [36-37]
+	M3Cosfi           [2]byte // [38-39]
+
+	HarvestTimes   [6]byte // [40-45]
+	ConversionType byte    // [46]
+	Reserved       byte    // [47]
 }
 
 // Measurement represents a single measurement record (D4 type)
@@ -171,32 +156,45 @@ const (
 
 // DecodeHistoricalMeasures decodes the base64 encoded historical measures
 // <---DECODE BASE64--->
+
+// Helper function to convert bool to float64
+func btof(b bool) float64 {
+	if b {
+		return 1.0
+	}
+	return 0.0
+}
+
+// Helper function to check if pair is FFFE
+func checkPairOn(high, low byte) bool {
+	return high == 0xFF && low == 0xFE
+}
+
+// Helper function to check if pair is not FFFF
+func checkPairOff(high, low byte) bool {
+	return !(high == 0xFF && low == 0xFF)
+}
+
 func (s *Server) DecodeMeasures() ([]map[string]interface{}, error) {
 	var results []map[string]interface{}
 
 	for _, sample := range SampleMeasurements {
-		// Decode from base64
 		data, err := base64.StdEncoding.DecodeString(sample)
 		if err != nil {
 			return nil, fmt.Errorf("base64 decode failed: %v", err)
 		}
 
-		// Verify and remove D4 header
 		if len(data) < 2 || string(data[:2]) != "D4" {
 			continue
 		}
-		measurementData := data[2:] // Remove D4 header
+		measurementData := data[2:]
 
-		// Verify length is multiple of 48
 		if len(measurementData)%48 != 0 {
 			return nil, fmt.Errorf("invalid data length: %d bytes (not divisible by 48)", len(measurementData))
 		}
 
-		// Process each 48-byte block
 		for i := 0; i < len(measurementData)/48; i++ {
 			block := measurementData[i*48 : (i*48)+48]
-
-			// Parse the 48-byte block into measurements
 			blockResults, err := parseMeasurementBlock(block, s.Location)
 			if err != nil {
 				return nil, err
@@ -211,45 +209,69 @@ func (s *Server) DecodeMeasures() ([]map[string]interface{}, error) {
 func parseMeasurementBlock(block []byte, loc *time.Location) ([]map[string]interface{}, error) {
 	var results []map[string]interface{}
 
-	// Extract basic information
-	status := block[0]
-	year := int(block[1])
-	month := int(block[2])
-	day := int(block[3])
-	pole := binary.LittleEndian.Uint16(block[4:6])
-	measureType := block[6]
+	data := Data{}
+	if err := binary.Read(bytes.NewReader(block), binary.LittleEndian, &data); err != nil {
+		return nil, fmt.Errorf("failed to parse data block: %v", err)
+	}
 
-	// Process the 3 measurements in each block
-	for idx := 0; idx < 3; idx++ {
+	// Extract common fields
+	year := 2000 + int(data.Year)
+	month := time.Month(data.Month)
+	day := int(data.Day)
+	pole := binary.LittleEndian.Uint16([]byte{data.PoleLow, data.PoleHigh})
+
+	// Process each of the 3 measurements
+	measurements := []struct {
+		state       byte
+		tension     [2]byte
+		current     [2]byte
+		powered     [2]byte
+		lit         [2]byte
+		cosfi       [2]byte
+		harvestTime [2]byte
+	}{
+		{data.M1LampState, data.M1Tension, data.M1Current, data.M1PoweredDuration, data.M1LitDuration, data.M1Cosfi, [2]byte{data.HarvestTimes[0], data.HarvestTimes[1]}},
+		{data.M2LampState, data.M2Tension, data.M2Current, data.M2PoweredDuration, data.M2LitDuration, data.M2Cosfi, [2]byte{data.HarvestTimes[2], data.HarvestTimes[3]}},
+		{data.M3LampState, data.M3Tension, data.M3Current, data.M3PoweredDuration, data.M3LitDuration, data.M3Cosfi, [2]byte{data.HarvestTimes[4], data.HarvestTimes[5]}},
+	}
+
+	for _, m := range measurements {
 		result := make(map[string]interface{})
-		offset := idx * 11
-		timeOffset := idx * 2
 
-		// Create timestamp (using server's location)
+		// Timestamp calculation
+		harvestMinutes := int(binary.LittleEndian.Uint16(m.harvestTime[:]))
 		measureTime := time.Date(
-			2000+year,
-			time.Month(month),
+			year,
+			month,
 			day,
 			12, 0, 0, 0, // Noon as base time
 			loc,
-		)
-
-		if hrs := int(binary.LittleEndian.Uint16(block[40+timeOffset : 42+timeOffset])); hrs != 0xFFFF {
-			measureTime = measureTime.Add(time.Minute * time.Duration(hrs))
-		}
+		).Add(time.Minute * time.Duration(harvestMinutes))
 
 		// Electrical measurements
-		voltage := binary.LittleEndian.Uint16(block[8+offset : 10+offset])
-		current := float64(binary.LittleEndian.Uint16(block[10+offset:12+offset])) * 3.57 / 1000
-		cosfi := float64(block[16+offset]) / 100
-		if block[17+offset]&1 == 1 {
+		voltage := binary.LittleEndian.Uint16(m.tension[:])
+		current := float64(binary.LittleEndian.Uint16(m.current[:])) * 3.57 / 1000
+
+		// Power factor
+		cosfi := float64(m.cosfi[0]) / 100
+		if m.cosfi[1]&1 == 1 {
 			cosfi *= -1
 		}
 		power := float64(voltage) * current * cosfi
 
 		// Lamp state
-		state := block[7+offset]
-		lampOn := state&1 == 1
+		lampOn := m.state&1 == 1
+		powerSupplyUndervoltage := m.state&2 == 1
+		powerSupplyOvervoltage := m.state&4 == 1
+		powerSupplyOutputLimiter := m.state&8 == 1
+		powerSupplyTermalDerating := m.state&16 == 1
+		ledPlateOpenCircuit := m.state&32 == 1
+		ledPlateThermalDerating := m.state&64 == 1
+		ledPlateThermalShutdown := m.state&128 == 1
+
+		// Time durations
+		poweredDuration := float64(binary.LittleEndian.Uint16(m.powered[:])) * 154.3
+		litDuration := float64(binary.LittleEndian.Uint16(m.lit[:])) * 154.3
 
 		// Build result map
 		result["timestamp"] = measureTime
@@ -259,10 +281,211 @@ func parseMeasurementBlock(block []byte, loc *time.Location) ([]map[string]inter
 		result["power"] = power
 		result["cosfi"] = cosfi
 		result["lamp_on"] = lampOn
-		result["measure_type"] = measureType
-		result["status"] = status
+		result["power_supply_undervoltage"] = powerSupplyUndervoltage
+		result["power_supply_overvoltage"] = powerSupplyOvervoltage
+		result["power_supply_output_limiter"] = powerSupplyOutputLimiter
+		result["power_supply_termal_derating"] = powerSupplyTermalDerating
+		result["led_plate_open_circuit"] = ledPlateOpenCircuit
+		result["led_plate_thermal_derating"] = ledPlateThermalDerating
+		result["led_plate_thermal_shutdown"] = ledPlateThermalShutdown
+		result["time_lamp_powered"] = poweredDuration
+		result["time_lamp_poweron"] = litDuration
+		result["measure_type"] = data.MeasureType
+		result["status"] = data.Status
 
 		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+func DecodeHistoricalMeasures(base64Data string, loc *time.Location) ([]map[string]interface{}, error) {
+	var results []map[string]interface{}
+
+	// Decode from base64
+	data, err := base64.StdEncoding.DecodeString(base64Data)
+	if err != nil {
+		return nil, fmt.Errorf("base64 decode failed: %v", err)
+	}
+
+	//log.Printf("Decoded to UTF-8: %s", string(data))
+
+	if len(data) < 2 || string(data[:2]) != "D4" {
+		return nil, fmt.Errorf("invalid data header, expected D4")
+	}
+	measurementData := data[2:] // Remove D4 header
+
+	//log.Printf("Decoded to UTF-8 (removed D4): %s", string(measurementData))
+
+	// Verify length is multiple of 48*2 (since each byte is represented as 2 hex chars)
+	if len(measurementData)%(48*2) != 0 {
+		return nil, fmt.Errorf("invalid data length: %d bytes (not divisible by %d)", len(measurementData), 48*2)
+	}
+
+	// Convert hex string to bytes
+	dst := make([]byte, hex.DecodedLen(len(measurementData)))
+	n, err := hex.Decode(dst, measurementData)
+	if err != nil {
+		return nil, fmt.Errorf("hex decode failed: %v", err)
+	}
+	dst = dst[:n]
+
+	// Process each 48-byte block
+	nBlocks := len(dst) / 48
+	for i := 0; i < nBlocks; i++ {
+		block := dst[i*48 : (i*48)+48]
+
+		// Extract basic information
+		status := block[0]
+		yearHigh := int16(status & 31)
+		yearLow := block[1]
+		year := int((yearHigh << 8)) + int(yearLow)
+
+		if year < 2000 || year > 2100 {
+			continue // Skip invalid years
+		}
+
+		month, err := strconv.Atoi(fmt.Sprintf("%x", block[2]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid month: %v", err)
+		}
+
+		day, err := strconv.Atoi(fmt.Sprintf("%x", block[3]))
+		if err != nil {
+			return nil, fmt.Errorf("invalid day: %v", err)
+		}
+
+		// Lamp address is little-endian (byte 5 is high, byte 4 is low)
+		lampAddress := fmt.Sprintf("%02x%02x", block[5], block[4])
+		lampAddressInt, err := strconv.Atoi(lampAddress)
+		if err != nil {
+			return nil, fmt.Errorf("invalid lamp address: %v", err)
+		}
+
+		measureType := fmt.Sprintf("%x", block[6])
+		scaleFactorValue := fmt.Sprintf("%x", block[46])
+
+		// Check alarm status
+		notifyAlarmNotResponding := false
+		alarmNotRespondingActive := false
+
+		if checkPairOn(block[41], block[40]) &&
+			checkPairOn(block[43], block[42]) &&
+			checkPairOn(block[45], block[44]) {
+			notifyAlarmNotResponding = true
+			alarmNotRespondingActive = true
+		}
+
+		if !checkPairOff(block[41], block[40]) ||
+			!checkPairOff(block[43], block[42]) ||
+			!checkPairOff(block[45], block[44]) {
+			notifyAlarmNotResponding = true
+			alarmNotRespondingActive = false
+		}
+
+		// Time scale factor
+		timeScaleFactor := 154.3
+		if scaleFactorValue == "1" {
+			timeScaleFactor = 60 * 60 * 1 // seconds in an hour
+		} else if scaleFactorValue == "2" {
+			timeScaleFactor = 60 * 60 * 2 // seconds in two hours
+		} else if scaleFactorValue == "3" {
+			timeScaleFactor = 60 * 60 * 3 // seconds in three hours
+		}
+
+		// Process the 3 measurements in each block
+		for idx := 0; idx < 3; idx++ {
+			result := make(map[string]interface{})
+			offset := idx * 11
+			timeOffset := idx * 2
+
+			// Minutes from noon
+			measuresTime := int64(int64(block[41+timeOffset])<<8) + int64(block[40+timeOffset])
+			if measuresTime == 0xFFFF || measuresTime == 0xFFFE {
+				continue // Skip invalid measures
+			}
+
+			// Create timestamp
+			measureTime := time.Date(
+				year,
+				time.Month(month),
+				day,
+				12, 0, 0, 0, // Noon as base time
+				loc,
+			).Add(time.Minute * time.Duration(measuresTime))
+
+			// Lamp state
+			lampState := block[7+offset]
+			lampPowerOn := lampState&1 == 1
+			powerSupplyUndervoltage := lampState&2 == 1
+			powerSupplyOvervoltage := lampState&4 == 1
+			powerSupplyOutputLimiter := lampState&8 == 1
+			powerSupplyTermalDerating := lampState&16 == 1
+			ledPlateOpenCircuit := lampState&32 == 1
+			ledPlateThermalDerating := lampState&64 == 1
+			ledPlateThermalShutdown := lampState&128 == 1
+
+			// Electrical measurements
+			voltage := int64(int64(block[9+offset])<<8) + int64(block[8+offset])
+			current := float64(int64(int64(block[11+offset])<<8)+int64(block[10+offset])) * 3.57 / 1000
+			energyLow := int64(int64(block[13+offset])<<8) + int64(block[12+offset])
+			energyHigh := int64(int64(block[15+offset])<<8) + int64(block[14+offset])
+			energy := (energyHigh << 16) + energyLow
+			timeLampPowered := float64(int64(int64(block[13+offset])<<8)+int64(block[12+offset])) * timeScaleFactor
+			timeLampPoweron := float64(int64(int64(block[15+offset])<<8)+int64(block[14+offset])) * timeScaleFactor
+
+			// Power factor
+			cosfi := float64(int64(block[16+offset])) / 100.0
+			if (block[17+offset]&1) == 1 && cosfi != 0 {
+				cosfi *= -1.0
+			}
+
+			// Active power
+			activePower := cosfi * float64(voltage) * current
+			if activePower < 0 {
+				activePower *= -1.0
+			}
+
+			// Skip invalid states
+			if lampState != 0x28 && lampState != 0xF8 && lampState != 0xF1 {
+				result[LPM_lamp_measure_lamp_power_on] = btof(lampPowerOn)
+				result[LPM_lamp_measure_power_supply_undervoltage] = btof(powerSupplyUndervoltage)
+				result[LPM_lamp_measure_power_supply_overvoltage] = btof(powerSupplyOvervoltage)
+				result[LPM_lamp_measure_power_supply_output_limiter] = btof(powerSupplyOutputLimiter)
+				result[LPM_lamp_measure_power_supply_termal_derating] = btof(powerSupplyTermalDerating)
+				result[LPM_lamp_measure_led_plate_open_circuit] = btof(ledPlateOpenCircuit)
+				result[LPM_lamp_measure_led_plate_thermal_derating] = btof(ledPlateThermalDerating)
+				result[LPM_lamp_measure_led_plate_thermal_shutdown] = btof(ledPlateThermalShutdown)
+
+				result[LPM_lamp_measure_voltage] = float64(voltage)
+				result[LPM_lamp_measure_current] = current
+				result[LPM_lamp_measure_cosfi] = cosfi
+				result[LPM_lamp_measure_active_power] = activePower
+
+				if measureType == "7" && idx == 0 {
+					result[LPM_lamp_measure_energy] = float64(energy)
+				} else if measureType == "7" && idx > 0 {
+					result[LPM_lamp_measure_time_lamp_powered] = timeLampPowered
+					result[LPM_lamp_measure_time_lamp_poweron] = timeLampPoweron
+				}
+
+				result["timestamp"] = measureTime
+			}
+
+			// Add alarm status if needed
+			if idx == 2 && notifyAlarmNotResponding {
+				stateNotResponding := 0.0
+				if alarmNotRespondingActive {
+					stateNotResponding = 1.0
+				}
+				result[LPM_lamp_measure_state_not_responding] = stateNotResponding
+			}
+
+			if len(result) > 0 {
+				result[LPM_lamp_address_tag] = float64(lampAddressInt)
+				results = append(results, result)
+			}
+		}
 	}
 
 	return results, nil
