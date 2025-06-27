@@ -80,7 +80,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 		s.mu.Unlock()
 		conn.Close()
 
-		// Decode and print payload as JSON
 		payload, err := s.DecodeMeasures()
 		if err != nil {
 			log.Printf("Error decoding measures: %v", err)
@@ -90,32 +89,51 @@ func (s *Server) handleConnection(conn net.Conn) {
 		log.Printf("\n<--- PAYLOAD DUMP START --->")
 		log.Printf("Total measurements decoded: %d", len(payload))
 
-		// Group measurements by sample index and pole
-		measurementsBySample := make(map[int]map[uint16][]map[string]interface{})
+		// New organization - 3 levels:
+		// 1. Original SampleMeasurements index
+		// 2. Payload index within sample (0 or 1)
+		// 3. Measurement index within payload (0-2)
+
+		measurementsBySample := make(map[int]map[int][]map[string]interface{})
+
 		for i, measurement := range payload {
-			sampleIndex := i / 3 // Assuming 3 measurements per sample
-			pole := measurement["pole"].(uint16)
+			sampleIndex := i / 6        // 6 measurements per original sample (2 payloads × 3)
+			payloadIndex := (i / 3) % 2 // 0 or 1
+			measurementIndex := i % 3   // 0, 1, or 2
 
 			if measurementsBySample[sampleIndex] == nil {
-				measurementsBySample[sampleIndex] = make(map[uint16][]map[string]interface{})
+				measurementsBySample[sampleIndex] = make(map[int][]map[string]interface{})
 			}
-			measurementsBySample[sampleIndex][pole] = append(measurementsBySample[sampleIndex][pole], measurement)
+
+			// Add measurement metadata
+			measurement["sample"] = sampleIndex + 1
+			measurement["payload"] = payloadIndex + 1
+			measurement["measurement"] = measurementIndex + 1
+
+			measurementsBySample[sampleIndex][payloadIndex] = append(
+				measurementsBySample[sampleIndex][payloadIndex],
+				measurement,
+			)
 		}
 
-		// Print each sample separately
-		for sampleIndex, poles := range measurementsBySample {
-			log.Printf("\n=== Sample %d ===", sampleIndex+1)
+		// Print organized output
+		for sampleIdx := 0; sampleIdx < len(SampleMeasurements); sampleIdx++ {
+			if payloads, exists := measurementsBySample[sampleIdx]; exists {
+				log.Printf("\n=== ORIGINAL SAMPLE %d ===", sampleIdx+1)
 
-			for pole, measurements := range poles {
-				log.Printf("--- Pole %d ---", pole)
+				for payloadIdx := 0; payloadIdx < 2; payloadIdx++ {
+					if measurements, exists := payloads[payloadIdx]; exists {
+						log.Printf("--- Payload %d ---", payloadIdx+1)
 
-				for _, m := range measurements {
-					jsonData, err := json.MarshalIndent(m, "", "  ")
-					if err != nil {
-						log.Printf("Error marshaling measurement: %v", err)
-						continue
+						for _, m := range measurements {
+							jsonData, err := json.MarshalIndent(m, "", "  ")
+							if err != nil {
+								log.Printf("Error marshaling: %v", err)
+								continue
+							}
+							log.Printf("%s", string(jsonData))
+						}
 					}
-					log.Printf("%s", string(jsonData))
 				}
 			}
 		}

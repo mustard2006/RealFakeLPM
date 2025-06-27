@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/rand"
@@ -59,36 +58,58 @@ type Header struct {
 
 // 48 byte
 type Data struct {
-	Status            byte    // [0]
-	Year              byte    // [1]
-	Month             byte    // [2]
-	Day               byte    // [3]
-	PoleLow           byte    // [4]
-	PoleHigh          byte    // [5]
-	MeasureType       byte    // [6] 00 or 07
-	AELampStatus      byte    // [7]
-	AETension         [2]byte // [8-9]
-	AECurrent         [2]byte // [10-11]
-	AEPoweredDuration [2]byte // [12-13] Powered time duration
-	AELitDuration     [2]byte // [14-15]
-	AECosfi           [2]byte // [16-17]
-	M1LampState       byte    // [18]
-	M1Tension         [2]byte // [19-20]
-	M1Current         [2]byte // [21-22]
-	M1PoweredDuration [2]byte // [23-24]
-	M1LitDuration     [2]byte // [25-26]
-	M1Cosfi           [2]byte // [27-28]
-	M2LampState       byte    // [29]
-	M2Tension         [2]byte // [30-31]
-	M2Current         [2]byte // [32-33]
-	M2PoweredDuration [2]byte // [34-35]
-	M2LitDuration     [2]byte // [36-37]
-	M2Cosfi           [2]byte // [38-39]
-	AEHarvestTime     [2]byte // [40-41]
-	M1HarvestTime     [2]byte // [42-43]
-	M2HarvestTime     [2]byte // [44-45]
-	ConversionType    byte    // [46]
-	Reserved          byte    // [47]
+	Status      byte // [0] - Contains year high bits (5 bits) and status flags
+	YearLow     byte // [1] - Year low bits
+	Month       byte // [2] - Month in BCD format
+	Day         byte // [3] - Day in BCD format
+	PoleLow     byte // [4] - Pole address low byte
+	PoleHigh    byte // [5] - Pole address high byte
+	MeasureType byte // [6] - 0x00 or 0x07
+	// Measurement 1 (AE - first measurement)
+	AELampStatus  byte // [7]
+	AETensionLow  byte // [8] - Voltage low byte
+	AETensionHigh byte // [9] - Voltage high byte
+	AECurrentLow  byte // [10] - Current low byte
+	AECurrentHigh byte // [11] - Current high byte
+	AEPoweredLow  byte // [12] - Powered duration low byte
+	AEPoweredHigh byte // [13] - Powered duration high byte
+	AELitLow      byte // [14] - Lit duration low byte
+	AELitHigh     byte // [15] - Lit duration high byte
+	AECosfiValue  byte // [16] - Power factor value
+	AECosfiSign   byte // [17] - Power factor sign
+	// Measurement 2 (M1 - second measurement)
+	M1LampStatus  byte // [18]
+	M1TensionLow  byte // [19]
+	M1TensionHigh byte // [20]
+	M1CurrentLow  byte // [21]
+	M1CurrentHigh byte // [22]
+	M1PoweredLow  byte // [23]
+	M1PoweredHigh byte // [24]
+	M1LitLow      byte // [25]
+	M1LitHigh     byte // [26]
+	M1CosfiValue  byte // [27]
+	M1CosfiSign   byte // [28]
+	// Measurement 3 (M2 - third measurement)
+	M2LampStatus  byte // [29]
+	M2TensionLow  byte // [30]
+	M2TensionHigh byte // [31]
+	M2CurrentLow  byte // [32]
+	M2CurrentHigh byte // [33]
+	M2PoweredLow  byte // [34]
+	M2PoweredHigh byte // [35]
+	M2LitLow      byte // [36]
+	M2LitHigh     byte // [37]
+	M2CosfiValue  byte // [38]
+	M2CosfiSign   byte // [39]
+	// Harvest times (for each measurement)
+	AEHarvestTimeLow  byte // [40]
+	AEHarvestTimeHigh byte // [41]
+	M1HarvestTimeLow  byte // [42]
+	M1HarvestTimeHigh byte // [43]
+	M2HarvestTimeLow  byte // [44]
+	M2HarvestTimeHigh byte // [45]
+	ConversionType    byte // [46] - Time scale factor (0-3)
+	Reserved          byte // [47]
 }
 
 // Measurement represents a single measurement record (D4 type)
@@ -127,8 +148,29 @@ func detectTimezone() (*time.Location, error) {
 	return time.UTC, nil
 }
 
-// <---DECODE BASE64--->
+// Add these constants to your protocol.go file
+const (
+	LPM_lamp_measure_lamp_power_on                = "lamp_power_on"
+	LPM_lamp_measure_power_supply_undervoltage    = "power_supply_undervoltage"
+	LPM_lamp_measure_power_supply_overvoltage     = "power_supply_overvoltage"
+	LPM_lamp_measure_power_supply_output_limiter  = "power_supply_output_limiter"
+	LPM_lamp_measure_power_supply_termal_derating = "power_supply_termal_derating"
+	LPM_lamp_measure_led_plate_open_circuit       = "led_plate_open_circuit"
+	LPM_lamp_measure_led_plate_thermal_derating   = "led_plate_thermal_derating"
+	LPM_lamp_measure_led_plate_thermal_shutdown   = "led_plate_thermal_shutdown"
+	LPM_lamp_measure_voltage                      = "voltage"
+	LPM_lamp_measure_current                      = "current"
+	LPM_lamp_measure_cosfi                        = "cosfi"
+	LPM_lamp_measure_active_power                 = "active_power"
+	LPM_lamp_measure_energy                       = "energy"
+	LPM_lamp_measure_time_lamp_powered            = "time_lamp_powered"
+	LPM_lamp_measure_time_lamp_poweron            = "time_lamp_poweron"
+	LPM_lamp_measure_state_not_responding         = "state_not_responding"
+	LPM_lamp_address_tag                          = "lamp_address"
+)
 
+// DecodeHistoricalMeasures decodes the base64 encoded historical measures
+// <---DECODE BASE64--->
 func (s *Server) DecodeMeasures() ([]map[string]interface{}, error) {
 	var results []map[string]interface{}
 
@@ -480,47 +522,58 @@ func ParseMeasurement(data []byte) (*Measurement, error) {
 func generateRandomData(t time.Time) [48]byte {
 	var d [48]byte
 
-	// Status byte (0)
+	// Status and date
 	d[0] = generateStatusByte()
-
-	// Year (1) - last two digits
 	d[1] = byte(t.Year() % 100)
-
-	// Month (2) and Day (3) - BCD encoded
 	d[2] = byteToBCD(byte(t.Month()))
 	d[3] = byteToBCD(byte(t.Day()))
 
-	// Pole number (4-5) - BCD encoded (0000-9999)
+	// Pole number
 	pole := uint16(rand.Intn(10000))
 	binary.LittleEndian.PutUint16(d[4:6], pole)
 
-	// Measurement type (6) - 00 or 07
+	// Measurement type
 	d[6] = byte(rand.Intn(2)) * 7 // 0 or 7
 
-	// Lamp status (7) - random status bits
-	d[7] = generateLampStatus()
+	// Generate 3 measurements
+	for i := 0; i < 3; i++ {
+		offset := 7 + i*11
 
-	// AE measurements (8-17)
-	generateAEMeasurements(d[8:18])
+		// Lamp state
+		d[offset] = generateLampStatus()
 
-	// Measurement 1 (18-28)
-	generateSingleMeasurement(d[18:29])
+		// Voltage (180-250V)
+		voltage := 18000 + rand.Intn(7000)
+		binary.LittleEndian.PutUint16(d[offset+1:offset+3], uint16(voltage))
 
-	// Measurement 2 (29-39)
-	generateSingleMeasurement(d[29:40])
+		// Current (0-5000 units of 3.47mA)
+		current := rand.Intn(5000)
+		binary.LittleEndian.PutUint16(d[offset+3:offset+5], uint16(current))
 
-	// Harvest times (40-45)
-	generateHarvestTimes(d[40:46])
+		// Durations
+		binary.LittleEndian.PutUint16(d[offset+5:offset+7], uint16(rand.Intn(65536)))
+		binary.LittleEndian.PutUint16(d[offset+7:offset+9], uint16(rand.Intn(65536)))
 
-	// Conversion type (46) - 0-3
+		// Power factor
+		pf := byte(rand.Intn(101))
+		sign := byte(0)
+		if rand.Float32() < 0.1 {
+			sign = 1
+		}
+		d[offset+9] = pf
+		d[offset+10] = sign
+
+		// Harvest time
+		if i < 3 {
+			harvestOffset := 40 + i*2
+			minutes := rand.Intn(1440)
+			binary.LittleEndian.PutUint16(d[harvestOffset:harvestOffset+2], uint16(minutes))
+		}
+	}
+
+	// Conversion type
 	d[46] = byte(rand.Intn(4))
-
-	// Reserved (47)
 	d[47] = 0
-
-	// Save hex encoded payload
-	payloadString := hex.EncodeToString(d[:])
-	PayloadHex = append(PayloadHex, payloadString)
 
 	return d
 }
