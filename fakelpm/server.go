@@ -88,6 +88,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 		for _, result := range results {
 			fmt.Printf("Measurement: %+v\n", result)
 		}
+
+		// Encode back to base64
+		encoded, err := EncodeHistoricalMeasures(results)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Println("Original base64 string:", SampleMeasurements[0])
+		fmt.Println("Encoded data:", encoded)
 	}()
 
 	log.Printf("New connection from %s", conn.RemoteAddr())

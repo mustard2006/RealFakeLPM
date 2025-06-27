@@ -175,6 +175,212 @@ func checkPairOff(high, low byte) bool {
 	return !(high == 0xFF && low == 0xFF)
 }
 
+// Helper function to safely get float values from the map
+func getFloat(m map[string]interface{}, key string) float64 {
+	if val, ok := m[key]; ok {
+		if f, ok := val.(float64); ok {
+			return f
+		}
+	}
+	return 0.0
+}
+
+// EncodeMeasurements encodes measurements back to the original base64 format
+func EncodeHistoricalMeasures(measurements []map[string]interface{}) (string, error) {
+	// First ensure all measurements have the required lamp_address field
+	// by checking for either lamp_address or pole
+	for i, m := range measurements {
+		// Try to get lamp_address from either field
+		var lampAddr interface{}
+		var ok bool
+
+		// First try LPM_lamp_address_tag
+		if lampAddr, ok = m[LPM_lamp_address_tag]; !ok {
+			// Fall back to "pole" if available
+			if lampAddr, ok = m["pole"]; !ok {
+				return "", fmt.Errorf("measurement %d missing both lamp_address and pole fields", i)
+			}
+		}
+
+		// Ensure we have a timestamp
+		if _, ok := m["timestamp"]; !ok {
+			return "", fmt.Errorf("measurement %d missing timestamp", i)
+		}
+
+		// Normalize to use LPM_lamp_address_tag
+		m[LPM_lamp_address_tag] = lampAddr
+	}
+
+	// Rest of the function remains the same as previous version
+	// Group measurements by their lamp_address and date (YYYYMMDD)
+	blocks := make(map[string][]map[string]interface{})
+
+	for _, m := range measurements {
+		lampAddr := int(m[LPM_lamp_address_tag].(float64))
+		timestamp := m["timestamp"].(time.Time)
+		dateKey := fmt.Sprintf("%d_%04d%02d%02d", lampAddr, timestamp.Year(), timestamp.Month(), timestamp.Day())
+
+		blocks[dateKey] = append(blocks[dateKey], m)
+	}
+
+	var binaryData bytes.Buffer
+	binaryData.Write([]byte("D4")) // Write header
+
+	for _, block := range blocks {
+		// We need exactly 3 measurements per block - pad if necessary
+		for len(block) < 3 {
+			if len(block) > 0 {
+				block = append(block, block[len(block)-1])
+			} else {
+				// Create empty measurement if block is empty
+				emptyMeas := make(map[string]interface{})
+				emptyMeas[LPM_lamp_address_tag] = 0.0
+				emptyMeas["timestamp"] = time.Now()
+				// Initialize all other fields to 0
+				emptyMeas[LPM_lamp_measure_lamp_power_on] = 0.0
+				emptyMeas[LPM_lamp_measure_power_supply_undervoltage] = 0.0
+				emptyMeas[LPM_lamp_measure_power_supply_overvoltage] = 0.0
+				emptyMeas[LPM_lamp_measure_power_supply_output_limiter] = 0.0
+				emptyMeas[LPM_lamp_measure_power_supply_termal_derating] = 0.0
+				emptyMeas[LPM_lamp_measure_led_plate_open_circuit] = 0.0
+				emptyMeas[LPM_lamp_measure_led_plate_thermal_derating] = 0.0
+				emptyMeas[LPM_lamp_measure_led_plate_thermal_shutdown] = 0.0
+				emptyMeas[LPM_lamp_measure_voltage] = 0.0
+				emptyMeas[LPM_lamp_measure_current] = 0.0
+				emptyMeas[LPM_lamp_measure_cosfi] = 0.0
+				emptyMeas[LPM_lamp_measure_time_lamp_powered] = 0.0
+				emptyMeas[LPM_lamp_measure_time_lamp_poweron] = 0.0
+				block = append(block, emptyMeas)
+			}
+		}
+
+		var blockBytes [48]byte
+
+		// Use first measurement for common fields
+		first := block[0]
+		timestamp := first["timestamp"].(time.Time)
+		lampAddr := int(first[LPM_lamp_address_tag].(float64))
+
+		// Status and year
+		year := timestamp.Year()
+		blockBytes[0] = byte((year >> 8) & 0x1F) // High bits of year in status
+		blockBytes[1] = byte(year & 0xFF)        // Low byte of year
+
+		// Month and day (BCD encoded)
+		blockBytes[2] = byteToBCD(byte(timestamp.Month()))
+		blockBytes[3] = byteToBCD(byte(timestamp.Day()))
+
+		// Lamp address (little-endian)
+		blockBytes[4] = byte(lampAddr & 0xFF)
+		blockBytes[5] = byte((lampAddr >> 8) & 0xFF)
+
+		// Measurement type (default to 0)
+		blockBytes[6] = 0
+
+		// Process each of the 3 measurements
+		for idx, measurement := range block[:3] {
+			offset := 7 + idx*11
+			timeOffset := idx * 2
+
+			// Lamp status
+			var status byte
+			if getFloat(measurement, LPM_lamp_measure_lamp_power_on) == 1 {
+				status |= 0x01
+			}
+			if getFloat(measurement, LPM_lamp_measure_power_supply_undervoltage) == 1 {
+				status |= 0x02
+			}
+			if getFloat(measurement, LPM_lamp_measure_power_supply_overvoltage) == 1 {
+				status |= 0x04
+			}
+			if getFloat(measurement, LPM_lamp_measure_power_supply_output_limiter) == 1 {
+				status |= 0x08
+			}
+			if getFloat(measurement, LPM_lamp_measure_power_supply_termal_derating) == 1 {
+				status |= 0x10
+			}
+			if getFloat(measurement, LPM_lamp_measure_led_plate_open_circuit) == 1 {
+				status |= 0x20
+			}
+			if getFloat(measurement, LPM_lamp_measure_led_plate_thermal_derating) == 1 {
+				status |= 0x40
+			}
+			if getFloat(measurement, LPM_lamp_measure_led_plate_thermal_shutdown) == 1 {
+				status |= 0x80
+			}
+			blockBytes[offset] = status
+
+			// Voltage (little-endian)
+			voltage := uint16(getFloat(measurement, LPM_lamp_measure_voltage))
+			blockBytes[offset+1] = byte(voltage & 0xFF)
+			blockBytes[offset+2] = byte(voltage >> 8)
+
+			// Current (convert back to original units)
+			current := uint16(getFloat(measurement, LPM_lamp_measure_current) * 1000 / 3.57)
+			blockBytes[offset+3] = byte(current & 0xFF)
+			blockBytes[offset+4] = byte(current >> 8)
+
+			// Time durations (convert back to original units)
+			powered := uint16(getFloat(measurement, LPM_lamp_measure_time_lamp_powered) / 154.3)
+			blockBytes[offset+5] = byte(powered & 0xFF)
+			blockBytes[offset+6] = byte(powered >> 8)
+
+			lit := uint16(getFloat(measurement, LPM_lamp_measure_time_lamp_poweron) / 154.3)
+			blockBytes[offset+7] = byte(lit & 0xFF)
+			blockBytes[offset+8] = byte(lit >> 8)
+
+			// Power factor
+			cosfi := getFloat(measurement, LPM_lamp_measure_cosfi)
+			absCosfi := cosfi
+			if cosfi < 0 {
+				absCosfi = -cosfi
+			}
+			blockBytes[offset+9] = byte(absCosfi * 100)
+			if cosfi < 0 {
+				blockBytes[offset+10] = 0x01
+			} else {
+				blockBytes[offset+10] = 0x00
+			}
+
+			// Harvest time (minutes from noon)
+			if ts, ok := measurement["timestamp"].(time.Time); ok {
+				minutes := int(ts.Sub(
+					time.Date(
+						timestamp.Year(),
+						timestamp.Month(),
+						timestamp.Day(),
+						12, 0, 0, 0,
+						timestamp.Location(),
+					),
+				).Minutes())
+				blockBytes[40+timeOffset] = byte(minutes & 0xFF)
+				blockBytes[41+timeOffset] = byte(minutes >> 8)
+			}
+		}
+
+		// Conversion type and reserved
+		blockBytes[46] = 0
+		blockBytes[47] = 0
+
+		binaryData.Write(blockBytes[:])
+	}
+
+	rawData := binaryData.Bytes()
+	if len(rawData) < 2 || string(rawData[:2]) != "D4" {
+		return "", fmt.Errorf("invalid data header")
+	}
+
+	// Convert binary data (after D4 header) to hex string
+	hexData := make([]byte, hex.EncodedLen(len(rawData[2:])))
+	hex.Encode(hexData, rawData[2:])
+
+	// Combine D4 header with hex data
+	finalData := append([]byte("D4"), hexData...)
+
+	// Then base64 encode
+	return base64.StdEncoding.EncodeToString(finalData), nil
+}
+
 func (s *Server) DecodeMeasures() ([]map[string]interface{}, error) {
 	var results []map[string]interface{}
 
